@@ -16,11 +16,11 @@ public partial class MainWindow : FluentWindow
 {
     private readonly MainViewModel _viewModel;
     private readonly AudioEngine _engine;
-    private readonly Action<LogEntry> _logHandler;
     private readonly AppSettings _settings;
     private SettingsWindow? _settingsWindow;
     private volatile bool _uiPaused;
     private bool _forceExit;
+    private bool _sizeLocked;
     private long _lastMetricsTick;
     private const int MetricsUiIntervalMs = 200;
 
@@ -33,7 +33,6 @@ public partial class MainWindow : FluentWindow
         _settings = SettingsStore.LoadOrCreate();
         _viewModel = new MainViewModel(Start, Stop, modelPath);
         _viewModel.AppVersion = AppVersion.GetVersion();
-        _logHandler = entry => Dispatcher.InvokeAsync(() => _viewModel.AddLog(entry.ToLine()));
         DataContext = _viewModel;
         _viewModel.PropertyChanged += OnViewModelPropertyChanged;
 
@@ -95,6 +94,14 @@ public partial class MainWindow : FluentWindow
         {
             EnforceAsioCoupling(false);
             ReloadOutputDevices(_viewModel.SelectedOutputBackend);
+        }
+        else if (e.PropertyName == nameof(MainViewModel.DenoiseStrengthDb))
+        {
+            _engine.SetDenoiseAttenLimit((float)_viewModel.DenoiseStrengthDb);
+        }
+        else if (e.PropertyName == nameof(MainViewModel.PostFilterBeta))
+        {
+            _engine.SetPostFilterBeta((float)_viewModel.PostFilterBeta);
         }
         else if (e.PropertyName == nameof(MainViewModel.SelectedOutputDevice))
         {
@@ -167,12 +174,12 @@ public partial class MainWindow : FluentWindow
                 _viewModel.UpdateMetrics(metrics);
             });
         };
-        AppLogger.Logged += _logHandler;
     }
 
     private void ApplySettings()
     {
-        _viewModel.ShowLogPanel = _settings.ShowLogPanel;
+        _viewModel.DenoiseStrengthDb = _settings.DenoiseAttenLimitDb;
+        _viewModel.PostFilterBeta = _settings.PostFilterBeta;
 
         if (!string.IsNullOrWhiteSpace(_settings.LastInputBackend))
         {
@@ -296,14 +303,14 @@ public partial class MainWindow : FluentWindow
     private void OnClosed(object? sender, EventArgs e)
     {
         _settings.HasLaunchedBefore = true;
-        _settings.ShowLogPanel = _viewModel.ShowLogPanel;
+        _settings.DenoiseAttenLimitDb = (float)_viewModel.DenoiseStrengthDb;
+        _settings.PostFilterBeta = (float)_viewModel.PostFilterBeta;
         _settings.LastInputBackend = _viewModel.SelectedInputBackend?.Name;
         _settings.LastOutputBackend = _viewModel.SelectedOutputBackend?.Name;
         _settings.LastInputDeviceId = _viewModel.SelectedInputDevice?.Id;
         _settings.LastOutputDeviceId = _viewModel.SelectedOutputDevice?.Id;
         SettingsStore.Save(_settings);
 
-        AppLogger.Logged -= _logHandler;
         _viewModel.PropertyChanged -= OnViewModelPropertyChanged;
         _engine.Dispose();
         UnregisterTrayIcon();
@@ -376,7 +383,30 @@ public partial class MainWindow : FluentWindow
             }, System.Windows.Threading.DispatcherPriority.Background);
         }
         RegisterTrayIcon();
+        LockWindowSizeToContent();
     }
+
+    private void LockWindowSizeToContent()
+    {
+        if (_sizeLocked)
+            return;
+
+        SizeToContent = SizeToContent.WidthAndHeight;
+        Dispatcher.InvokeAsync(() =>
+        {
+            if (_sizeLocked)
+                return;
+            SizeToContent = SizeToContent.Manual;
+            Width = ActualWidth;
+            Height = ActualHeight;
+            MinWidth = ActualWidth;
+            MaxWidth = ActualWidth;
+            MinHeight = ActualHeight;
+            MaxHeight = ActualHeight;
+            _sizeLocked = true;
+        }, System.Windows.Threading.DispatcherPriority.Loaded);
+    }
+
 
     private void ShowUserPrompt(string title, string message, ControlAppearance appearance)
     {
@@ -418,23 +448,19 @@ public partial class MainWindow : FluentWindow
         ShowInTaskbar = false;
         Hide();
         RegisterTrayIcon();
+        LockWindowSizeToContent();
     }
 
     private void ShowSettings()
     {
         if (_settingsWindow == null)
         {
-            _settingsWindow = new SettingsWindow(_settings, ApplySettingsChanged);
+            _settingsWindow = new SettingsWindow(_settings);
             _settingsWindow.Closed += (_, _) => _settingsWindow = null;
         }
 
         _settingsWindow.Show();
         _settingsWindow.Activate();
-    }
-
-    public void ApplySettingsChanged(AppSettings settings)
-    {
-        _viewModel.ShowLogPanel = settings.ShowLogPanel;
     }
 
     private void UpdateRuntimeAudioInfo()

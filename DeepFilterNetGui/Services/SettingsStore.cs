@@ -53,6 +53,16 @@ public static class SettingsStore
             settings.AudioSampleRate = 48000;
             changed = true;
         }
+        if (settings.PostFilterBeta < 0 || settings.PostFilterBeta > 0.05f)
+        {
+            settings.PostFilterBeta = 0f;
+            changed = true;
+        }
+        if (settings.DenoiseAttenLimitDb < 0 || settings.DenoiseAttenLimitDb > 100)
+        {
+            settings.DenoiseAttenLimitDb = 100;
+            changed = true;
+        }
         return changed;
     }
 

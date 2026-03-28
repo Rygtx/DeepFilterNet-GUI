@@ -17,7 +17,7 @@
 - 监控与可视化：波形、频谱、RTF、帧耗时等指标。
 - 托盘常驻：支持最小化到托盘、关闭到托盘、启动到托盘。
 - 开机启动：可在设置中启用（写入 `HKCU\Run`）。
-- 日志可控：日志面板与文件日志均通过配置开关启用。
+- 日志可控：文件日志可通过配置开关启用。
 
 **快速开始**
 环境要求：
@@ -77,7 +77,6 @@ dotnet run --project DeepFilterNetGui/DeepFilterNetGui.csproj
 
 | 字段 | 说明 |
 | --- | --- |
-| `ShowLogPanel` | 是否显示日志面板 |
 | `EnableFileLogging` | 是否输出日志文件 |
 | `EnableAutoStart` | 是否启用开机启动 |
 | `MinimizeToTray` | 最小化到托盘 |

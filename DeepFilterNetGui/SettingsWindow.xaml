@@ -35,22 +35,6 @@
                                     <ColumnDefinition Width="Auto" />
                                 </Grid.ColumnDefinitions>
                                 <StackPanel>
-                                    <TextBlock Text="显示日志面板" />
-                                    <TextBlock Foreground="#9E9E9E" FontSize="12" Text="主界面底部显示日志列表" />
-                                </StackPanel>
-                                <ui:ToggleSwitch x:Name="ShowLogToggle"
-                                                 Grid.Column="1"
-                                                 OnContent="开"
-                                                 OffContent="关"
-                                                 VerticalAlignment="Center" />
-                            </Grid>
-
-                            <Grid Margin="0,0,0,10">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*" />
-                                    <ColumnDefinition Width="Auto" />
-                                </Grid.ColumnDefinitions>
-                                <StackPanel>
                                     <TextBlock Text="输出日志到文件" />
                                     <TextBlock Foreground="#9E9E9E" FontSize="12" Text="写入 logs/deepfilternet3-*.log" />
                                 </StackPanel>

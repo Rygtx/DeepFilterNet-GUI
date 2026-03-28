@@ -23,6 +23,8 @@ public sealed class AudioEngine : IDisposable
     private ISampleProvider? _outputSampleProvider;
     private DeepFilterNetDenoiser? _denoiser;
     private DenoiseSampleProvider? _denoiseProvider;
+    private float _attenLimDb = 100f;
+    private float _postFilterBeta = 0f;
     private WaveFormat? _inputFormat;
     private WaveFormat? _outputFormat;
     private int _asioSampleRate;
@@ -57,6 +59,18 @@ public sealed class AudioEngine : IDisposable
     public int ActualInputSampleRate { get; private set; }
     public int ActualOutputSampleRate { get; private set; }
     public int ActualBufferSamples { get; private set; }
+
+    public void SetPostFilterBeta(float beta)
+    {
+        _postFilterBeta = Math.Clamp(beta, 0f, 0.05f);
+        _denoiser?.SetPostFilterBeta(_postFilterBeta);
+    }
+
+    public void SetDenoiseAttenLimit(float attenLimDb)
+    {
+        _attenLimDb = Math.Clamp(attenLimDb, 0f, 100f);
+        _denoiser?.SetAttenLimit(_attenLimDb);
+    }
 
     public static IReadOnlyList<AudioDeviceItem> GetInputDevices(AudioBackendType backend)
     {
@@ -138,7 +152,8 @@ public sealed class AudioEngine : IDisposable
         ActualOutputSampleRate = 0;
         ActualBufferSamples = 0;
 
-        _denoiser = new DeepFilterNetDenoiser(modelPath);
+        _denoiser = new DeepFilterNetDenoiser(modelPath, _attenLimDb);
+        _denoiser.SetPostFilterBeta(_postFilterBeta);
         _paStopping = false;
 
         bool useKsInput = inputBackend == AudioBackendType.Ks;

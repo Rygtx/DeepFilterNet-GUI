@@ -10,10 +10,10 @@ namespace DeepFilterNetGui.ViewModels;
 
 public sealed class MainViewModel : INotifyPropertyChanged
 {
-    private const int WaveformWidth = 800;
-    private const int WaveformHeight = 220;
-    private const int SpectrumWidth = 800;
-    private const int SpectrumHeight = 220;
+    private const int WaveformWidth = 1000;
+    private const int WaveformHeight = 1000;
+    private const int SpectrumWidth = 1000;
+    private const int SpectrumHeight = 1000;
 
     private readonly WriteableBitmap _waveformBitmap;
     private readonly int[] _waveformPixels;
@@ -37,7 +37,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private double _inRms;
     private double _outRms;
     private double _fps;
-    private bool _showLogPanel;
+    private double _denoiseStrengthDb = 100;
+    private double _postFilterBeta = 0;
     private int _actualInputSampleRate;
     private int _actualOutputSampleRate;
     private int _actualBufferSamples;
@@ -48,8 +49,6 @@ public sealed class MainViewModel : INotifyPropertyChanged
         InputDevices = new ObservableCollection<AudioDeviceItem>();
         OutputDevices = new ObservableCollection<AudioDeviceItem>();
         Models = new ObservableCollection<ModelItem>();
-        Logs = new ObservableCollection<string>();
-
         StartCommand = new RelayCommand(startAction, () => !IsRunning);
         StopCommand = new RelayCommand(stopAction, () => IsRunning);
         ToggleCommand = new RelayCommand(() =>
@@ -76,8 +75,6 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public ObservableCollection<AudioDeviceItem> InputDevices { get; }
     public ObservableCollection<AudioDeviceItem> OutputDevices { get; }
     public ObservableCollection<ModelItem> Models { get; }
-    public ObservableCollection<string> Logs { get; }
-
     public ICommand StartCommand { get; }
     public ICommand StopCommand { get; }
     public ICommand ToggleCommand { get; }
@@ -178,7 +175,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public double InRms { get => _inRms; set => SetField(ref _inRms, value); }
     public double OutRms { get => _outRms; set => SetField(ref _outRms, value); }
     public double Fps { get => _fps; set => SetField(ref _fps, value); }
-    public bool ShowLogPanel { get => _showLogPanel; set => SetField(ref _showLogPanel, value); }
+    public double DenoiseStrengthDb { get => _denoiseStrengthDb; set => SetField(ref _denoiseStrengthDb, value); }
+    public double PostFilterBeta { get => _postFilterBeta; set => SetField(ref _postFilterBeta, value); }
     public int ActualInputSampleRate
     {
         get => _actualInputSampleRate;
@@ -246,11 +244,6 @@ public sealed class MainViewModel : INotifyPropertyChanged
         InRms = metrics.InRms;
         OutRms = metrics.OutRms;
         Fps = metrics.Fps;
-    }
-
-    public void AddLog(string message)
-    {
-        Logs.Add($"{DateTime.Now:HH:mm:ss} {message}");
     }
 
     public void UpdateWaveform(float[] samples)

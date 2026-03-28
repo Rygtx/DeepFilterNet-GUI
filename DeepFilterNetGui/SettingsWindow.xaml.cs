@@ -21,8 +21,6 @@ public partial class SettingsWindow : Wpf.Ui.Controls.FluentWindow
         _onSettingsChanged = onSettingsChanged;
         Loaded += OnLoaded;
 
-        ShowLogToggle.Checked += OnShowLogChanged;
-        ShowLogToggle.Unchecked += OnShowLogChanged;
         FileLogToggle.Checked += OnFileLogChanged;
         FileLogToggle.Unchecked += OnFileLogChanged;
         AutoStartToggle.Checked += OnAutoStartChanged;
@@ -41,7 +39,6 @@ public partial class SettingsWindow : Wpf.Ui.Controls.FluentWindow
         bool autoStart = StartupManager.IsEnabled(StartupAppName);
         AutoStartToggle.IsChecked = autoStart;
         _settings.EnableAutoStart = autoStart;
-        ShowLogToggle.IsChecked = _settings.ShowLogPanel;
         FileLogToggle.IsChecked = _settings.EnableFileLogging;
         MinimizeToTrayToggle.IsChecked = _settings.MinimizeToTray;
         CloseToTrayToggle.IsChecked = _settings.CloseToTray;
@@ -49,15 +46,6 @@ public partial class SettingsWindow : Wpf.Ui.Controls.FluentWindow
         VersionText.Text = $"版本 {AppVersion.GetVersion()}";
         BindAudioParams();
         _updating = false;
-    }
-
-    private void OnShowLogChanged(object sender, RoutedEventArgs e)
-    {
-        if (_updating)
-            return;
-        _settings.ShowLogPanel = ShowLogToggle.IsChecked == true;
-        SettingsStore.Save(_settings);
-        _onSettingsChanged?.Invoke(_settings);
     }
 
     private void OnFileLogChanged(object sender, RoutedEventArgs e)
