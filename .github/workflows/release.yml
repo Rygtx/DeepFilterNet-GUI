@@ -1,0 +1,87 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - "main"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Read App Info
+        shell: pwsh
+        run: |
+          $projPath = $env:PROJECT_PATH
+          if ([string]::IsNullOrWhiteSpace($projPath)) {
+            $projects = Get-ChildItem -Recurse -Filter *.csproj | Where-Object { $_.FullName -notmatch '\\\\(bin|obj)\\\\' }
+            if ($projects.Count -eq 0) { throw "No .csproj found" }
+            if ($projects.Count -gt 1) { throw "Multiple .csproj found, please pin PROJECT_PATH" }
+            $projPath = $projects[0].FullName
+          } else {
+            if (-not (Test-Path $projPath)) { throw "PROJECT_PATH not found: $projPath" }
+          }
+          [xml]$xml = Get-Content $projPath
+          $version = $xml.Project.PropertyGroup.Version | Select-Object -First 1
+          if (-not $version) { throw "Version not found in $projPath" }
+          $assemblyName = $xml.Project.PropertyGroup.AssemblyName | Select-Object -First 1
+          if (-not $assemblyName) { $assemblyName = [IO.Path]::GetFileNameWithoutExtension($projPath) }
+          "PROJECT_PATH=$projPath" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "APP_NAME=$assemblyName" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "RELEASE_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "RELEASE_TAG=v$version" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "RELEASE_NAME=v$version" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Restore
+        run: dotnet restore
+
+      - name: Publish (Self-Contained)
+        run: dotnet publish "${{ env.PROJECT_PATH }}" -c Release -r win-x64 --self-contained true -o "publish-${{ env.APP_NAME }}-sc"
+
+      - name: Publish (Framework-Dependent)
+        run: dotnet publish "${{ env.PROJECT_PATH }}" -c Release -r win-x64 --self-contained false -o "publish-${{ env.APP_NAME }}-fd"
+
+      - name: Include docs (Self-Contained)
+        shell: pwsh
+        run: |
+          Copy-Item README.md, LICENSE -Destination "publish-$env:APP_NAME-sc" -Force
+
+      - name: Include docs (Framework-Dependent)
+        shell: pwsh
+        run: |
+          Copy-Item README.md, LICENSE -Destination "publish-$env:APP_NAME-fd" -Force
+
+      - name: Zip
+        shell: pwsh
+        run: |
+          $tag = "${{ env.RELEASE_TAG }}"
+          $zipSc = "$env:APP_NAME-win-x64-self-contained-$tag.zip"
+          $zipFd = "$env:APP_NAME-win-x64-framework-dependent-$tag.zip"
+          if (Test-Path $zipSc) { Remove-Item $zipSc -Force }
+          if (Test-Path $zipFd) { Remove-Item $zipFd -Force }
+          Compress-Archive -Path "publish-$env:APP_NAME-sc\*" -DestinationPath $zipSc
+          Compress-Archive -Path "publish-$env:APP_NAME-fd\*" -DestinationPath $zipFd
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ env.RELEASE_NAME }}
+          tag_name: ${{ env.RELEASE_TAG }}
+          target_commitish: ${{ github.sha }}
+          files: |
+            ${{ env.APP_NAME }}-win-x64-self-contained-${{ env.RELEASE_TAG }}.zip
+            ${{ env.APP_NAME }}-win-x64-framework-dependent-${{ env.RELEASE_TAG }}.zip
+          generate_release_notes: true
+
