@@ -12,9 +12,9 @@ public sealed class AppSettings
     public string? LastOutputBackend { get; set; }
     public string? LastInputDeviceId { get; set; }
     public string? LastOutputDeviceId { get; set; }
-    public string? LastModelName { get; set; }
     public int AudioSampleRate { get; set; } = 48000;
     public float DenoiseAttenLimitDb { get; set; } = 100f;
     public float PostFilterBeta { get; set; } = 0f;
+    public ReduceMaskMode ReduceMask { get; set; } = ReduceMaskMode.Independent;
 }
 

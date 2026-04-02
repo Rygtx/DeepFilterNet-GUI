@@ -1,4 +1,3 @@
-using System.IO;
 using System.Linq;
 using System.Windows;
 using System.Threading;
@@ -28,10 +27,9 @@ public partial class MainWindow : FluentWindow
     {
         InitializeComponent();
 
-        var modelPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Models", "DeepFilterNet3_onnx.tar.gz");
         _engine = new AudioEngine();
         _settings = SettingsStore.LoadOrCreate();
-        _viewModel = new MainViewModel(Start, Stop, modelPath);
+        _viewModel = new MainViewModel(Start, Stop);
         _viewModel.AppVersion = AppVersion.GetVersion();
         DataContext = _viewModel;
         _viewModel.PropertyChanged += OnViewModelPropertyChanged;
@@ -180,6 +178,7 @@ public partial class MainWindow : FluentWindow
     {
         _viewModel.DenoiseStrengthDb = _settings.DenoiseAttenLimitDb;
         _viewModel.PostFilterBeta = _settings.PostFilterBeta;
+        _engine.SetReduceMask(_settings.ReduceMask);
 
         if (!string.IsNullOrWhiteSpace(_settings.LastInputBackend))
         {
@@ -212,7 +211,6 @@ public partial class MainWindow : FluentWindow
             if (output != null)
                 _viewModel.SelectedOutputDevice = output;
         }
-
     }
 
     private void Start()
@@ -228,13 +226,6 @@ public partial class MainWindow : FluentWindow
         {
             AppLogger.Warning("请选择输入与输出设备。");
             ShowUserPrompt("提示", "请选择输入与输出设备。", ControlAppearance.Caution);
-            return;
-        }
-
-        if (!File.Exists(_viewModel.ModelPath))
-        {
-            AppLogger.Error($"模型文件不存在: {_viewModel.ModelPath}");
-            ShowUserPrompt("模型不存在", "模型文件不存在，请将模型放入 Models 文件夹。", ControlAppearance.Danger);
             return;
         }
 
@@ -262,7 +253,7 @@ public partial class MainWindow : FluentWindow
                 }
             }
 
-            _engine.Start(inputBackend, outputBackend, inputDevice, outputDevice, _viewModel.ModelPath, _settings);
+            _engine.Start(inputBackend, outputBackend, inputDevice, outputDevice, _settings);
             UpdateRuntimeAudioInfo();
             _viewModel.IsRunning = true;
             _viewModel.StatusText = "运行中";
@@ -277,7 +268,7 @@ public partial class MainWindow : FluentWindow
             {
                 AppLogger.Error("启动失败。", ex);
             }
-            ShowUserPrompt("启动失败", "启动失败，请查看日志并确认设备与模型是否可用。", ControlAppearance.Danger);
+            ShowUserPrompt("启动失败", "启动失败，请查看日志并确认设备与运行时配置是否可用。", ControlAppearance.Danger);
             _viewModel.StatusText = "启动失败";
             ClearRuntimeAudioInfo();
         }
@@ -455,7 +446,7 @@ public partial class MainWindow : FluentWindow
     {
         if (_settingsWindow == null)
         {
-            _settingsWindow = new SettingsWindow(_settings);
+            _settingsWindow = new SettingsWindow(_settings, OnSettingsChanged);
             _settingsWindow.Closed += (_, _) => _settingsWindow = null;
         }
 
@@ -468,6 +459,7 @@ public partial class MainWindow : FluentWindow
         _viewModel.ActualInputSampleRate = _engine.ActualInputSampleRate;
         _viewModel.ActualOutputSampleRate = _engine.ActualOutputSampleRate;
         _viewModel.ActualBufferSamples = _engine.ActualBufferSamples;
+        _viewModel.ProcessingChannelMode = _engine.ProcessingChannelMode;
     }
 
     private void ClearRuntimeAudioInfo()
@@ -475,6 +467,16 @@ public partial class MainWindow : FluentWindow
         _viewModel.ActualInputSampleRate = 0;
         _viewModel.ActualOutputSampleRate = 0;
         _viewModel.ActualBufferSamples = 0;
+        _viewModel.ProcessingChannelMode = "未运行";
+    }
+
+    private void OnSettingsChanged(AppSettings settings)
+    {
+        _engine.SetReduceMask(settings.ReduceMask);
+        if (_viewModel.IsRunning)
+        {
+            UpdateRuntimeAudioInfo();
+        }
     }
 
     private void RegisterTrayIcon()

@@ -63,6 +63,11 @@ public static class SettingsStore
             settings.DenoiseAttenLimitDb = 100;
             changed = true;
         }
+        if (!Enum.IsDefined(settings.ReduceMask))
+        {
+            settings.ReduceMask = ReduceMaskMode.Independent;
+            changed = true;
+        }
         return changed;
     }
 

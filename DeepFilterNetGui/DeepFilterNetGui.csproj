@@ -7,7 +7,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
     <ApplicationIcon>Assets\app.ico</ApplicationIcon>
-    <Version>2026.3.29.1</Version>
+    <Version>2026.4.2.1</Version>
     <RootNamespace>DeepFilterNetGui</RootNamespace>
     <AssemblyVersion>$(Version)</AssemblyVersion>
     <FileVersion>$(Version)</FileVersion>
@@ -17,6 +17,17 @@
 
   <PropertyGroup Condition="'$(IsPublish)'=='true'">
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <NativeBridgeName>deepfilter_runtime_bridge</NativeBridgeName>
+    <RustBridgeManifest>$(MSBuildProjectDirectory)\..\rust\deepfilter_runtime_bridge\Cargo.toml</RustBridgeManifest>
+    <RustTargetTriple>x86_64-pc-windows-msvc</RustTargetTriple>
+    <CargoProfile Condition="'$(Configuration)'=='Release'">release</CargoProfile>
+    <CargoProfile Condition="'$(Configuration)'!='Release'">debug</CargoProfile>
+    <CargoArguments Condition="'$(Configuration)'=='Release'">build --manifest-path &quot;$(RustBridgeManifest)&quot; --target $(RustTargetTriple) --locked --release</CargoArguments>
+    <CargoArguments Condition="'$(Configuration)'!='Release'">build --manifest-path &quot;$(RustBridgeManifest)&quot; --target $(RustTargetTriple) --locked</CargoArguments>
+    <NativeBridgeOutputPath>$(MSBuildProjectDirectory)\..\rust\deepfilter_runtime_bridge\target\$(RustTargetTriple)\$(CargoProfile)\$(NativeBridgeName).dll</NativeBridgeOutputPath>
   </PropertyGroup>
 
   <ItemGroup>
@@ -31,16 +42,13 @@
     <Resource Include="Assets\app.png" />
   </ItemGroup>
 
-  <ItemGroup>
-    <None Include="Models\DeepFilterNet3_onnx.tar.gz">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
-    </None>
-    <None Include="Native\df.dll">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
-      <Link>df.dll</Link>
-    </None>
-  </ItemGroup>
+  <Target Name="BuildNativeBridge" BeforeTargets="BeforeBuild">
+    <Exec Command="cargo $(CargoArguments)" />
+    <Copy SourceFiles="$(NativeBridgeOutputPath)" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />
+  </Target>
+
+  <Target Name="CopyNativeBridgeToPublish" AfterTargets="Publish">
+    <Copy SourceFiles="$(NativeBridgeOutputPath)" DestinationFolder="$(PublishDir)" SkipUnchangedFiles="true" />
+  </Target>
 
 </Project>

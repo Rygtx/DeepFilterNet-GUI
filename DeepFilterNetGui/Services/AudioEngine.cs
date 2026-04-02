@@ -1,5 +1,4 @@
 using System;
-using System.Diagnostics;
 using System.Linq;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
@@ -13,26 +12,27 @@ namespace DeepFilterNetGui.Services;
 
 public sealed class AudioEngine : IDisposable
 {
-    private const int TargetSampleRate = 48000;
-
     private IWaveIn? _capture;
     private IWavePlayer? _output;
     private AsioOut? _asioOut;
     private BufferedWaveProvider? _inputBuffer;
     private ISampleProvider? _inputSampleProvider;
     private ISampleProvider? _outputSampleProvider;
-    private DeepFilterNetDenoiser? _denoiser;
+    private DeepFilterRuntime? _runtime;
     private DenoiseSampleProvider? _denoiseProvider;
     private float _attenLimDb = 100f;
-    private float _postFilterBeta = 0f;
+    private float _postFilterBeta;
+    private ReduceMaskMode _reduceMask = ReduceMaskMode.Independent;
     private WaveFormat? _inputFormat;
     private WaveFormat? _outputFormat;
+    private int _pipelineSampleRate;
+    private int _processingChannels;
     private int _asioSampleRate;
     private int _asioInputChannels = 1;
     private int _asioOutputChannels = 2;
-    private byte[]? _asioByteBuffer;
+    private byte[]? _captureByteBuffer;
+    private float[]? _captureFloatBuffer;
     private float[]? _asioInterleavedBuffer;
-    private float[]? _asioMonoBuffer;
     private TimingAccumulator? _inputResampleTiming;
     private TimingAccumulator? _outputChainTiming;
     private Stream? _paStream;
@@ -45,7 +45,6 @@ public sealed class AudioEngine : IDisposable
     private int _paOutputChannels;
     private SampleFormat _paSampleFormat;
     private float[]? _paInputBuffer;
-    private float[]? _paInputMono;
     private short[]? _paInputInt16;
     private float[]? _paOutputBuffer;
     private short[]? _paOutputInt16;
@@ -59,17 +58,24 @@ public sealed class AudioEngine : IDisposable
     public int ActualInputSampleRate { get; private set; }
     public int ActualOutputSampleRate { get; private set; }
     public int ActualBufferSamples { get; private set; }
+    public string ProcessingChannelMode { get; private set; } = "未运行";
 
     public void SetPostFilterBeta(float beta)
     {
         _postFilterBeta = Math.Clamp(beta, 0f, 0.05f);
-        _denoiser?.SetPostFilterBeta(_postFilterBeta);
+        _runtime?.SetPostFilterBeta(_postFilterBeta);
     }
 
     public void SetDenoiseAttenLimit(float attenLimDb)
     {
         _attenLimDb = Math.Clamp(attenLimDb, 0f, 100f);
-        _denoiser?.SetAttenLimit(_attenLimDb);
+        _runtime?.SetAttenLimit(_attenLimDb);
+    }
+
+    public void SetReduceMask(ReduceMaskMode reduceMask)
+    {
+        _reduceMask = NormalizeReduceMask(reduceMask);
+        _runtime?.SetReduceMask(_reduceMask);
     }
 
     public static IReadOnlyList<AudioDeviceItem> GetInputDevices(AudioBackendType backend)
@@ -140,7 +146,7 @@ public sealed class AudioEngine : IDisposable
         }
     }
 
-    public void Start(AudioBackendType inputBackend, AudioBackendType outputBackend, AudioDeviceItem inputDevice, AudioDeviceItem outputDevice, string modelPath, AppSettings settings)
+    public void Start(AudioBackendType inputBackend, AudioBackendType outputBackend, AudioDeviceItem inputDevice, AudioDeviceItem outputDevice, AppSettings settings)
     {
         if (IsRunning)
             return;
@@ -148,12 +154,12 @@ public sealed class AudioEngine : IDisposable
             throw new ArgumentNullException(nameof(settings));
 
         _config = BuildConfig(settings);
+        _reduceMask = NormalizeReduceMask(settings.ReduceMask);
         ActualInputSampleRate = 0;
         ActualOutputSampleRate = 0;
         ActualBufferSamples = 0;
+        ProcessingChannelMode = "未运行";
 
-        _denoiser = new DeepFilterNetDenoiser(modelPath, _attenLimDb);
-        _denoiser.SetPostFilterBeta(_postFilterBeta);
         _paStopping = false;
 
         bool useKsInput = inputBackend == AudioBackendType.Ks;
@@ -181,48 +187,41 @@ public sealed class AudioEngine : IDisposable
             }
         }
 
-        LogStartInfo(inputBackend, outputBackend, inputDevice, outputDevice, modelPath);
-        if (inputBackend == AudioBackendType.Ks || outputBackend == AudioBackendType.Ks)
-        {
-            AppLogger.Info("KS后端使用 PortAudio WDM-KS。");
-        }
+        if (_inputFormat == null || _outputFormat == null)
+            throw new InvalidOperationException("音频格式未初始化。");
+
+        _pipelineSampleRate = DeterminePipelineSampleRate();
+        _processingChannels = NormalizeCaptureChannels(_inputFormat.Channels);
+        ProcessingChannelMode = _processingChannels == 2 ? "Stereo" : "Mono";
+        ActualOutputSampleRate = _pipelineSampleRate;
+
+        BuildInputSampleProvider(_pipelineSampleRate, _processingChannels);
 
         if (_inputSampleProvider == null)
             throw new InvalidOperationException("输入音频链路未初始化。");
 
+        _runtime = new DeepFilterRuntime(_pipelineSampleRate, _processingChannels, _attenLimDb, _postFilterBeta, _reduceMask);
+
         _denoiseProvider = new DenoiseSampleProvider(
             _inputSampleProvider,
-            _denoiser,
-            TargetSampleRate,
-            () => _inputBuffer?.BufferedDuration.TotalMilliseconds ?? 0,
+            _runtime,
+            _pipelineSampleRate,
+            Math.Max(1, _outputFormat.Channels),
+            GetEstimatedLatencyMs,
             WaveformAvailable,
             SpectrumAvailable,
-            MetricsAvailable,
-            GetInputResampleSnapshot,
-            GetOutputChainSnapshot
+            MetricsAvailable
         );
 
-        ISampleProvider outputSample = _denoiseProvider;
-        if (_outputFormat != null && _outputFormat.SampleRate != TargetSampleRate)
-        {
-            outputSample = new WdlResamplingSampleProvider(outputSample, _outputFormat.SampleRate);
-        }
-        if (_outputFormat != null && _outputFormat.Channels > 1)
-        {
-            outputSample = new MonoToStereoSampleProvider(outputSample);
-        }
-
         _outputChainTiming = new TimingAccumulator();
-        outputSample = new TimingSampleProvider(outputSample, _outputChainTiming);
-
-        _outputSampleProvider = outputSample;
+        _outputSampleProvider = new TimingSampleProvider(_denoiseProvider, _outputChainTiming);
         if (_asioOut != null)
         {
-            _asioOut.InitRecordAndPlayback(outputSample.ToWaveProvider(), _asioInputChannels, _asioSampleRate);
+            _asioOut.InitRecordAndPlayback(_outputSampleProvider.ToWaveProvider(), _asioInputChannels, _asioSampleRate);
         }
         else if (_output != null)
         {
-            _output.Init(outputSample.ToWaveProvider());
+            _output.Init(_outputSampleProvider.ToWaveProvider());
         }
 
         if (_paStream != null)
@@ -232,6 +231,11 @@ public sealed class AudioEngine : IDisposable
 
         _capture?.StartRecording();
         _output?.Play();
+        LogStartInfo(inputBackend, outputBackend, inputDevice, outputDevice);
+        if (inputBackend == AudioBackendType.Ks || outputBackend == AudioBackendType.Ks)
+        {
+            AppLogger.Info("KS 后端使用 PortAudio WDM-KS。");
+        }
         IsRunning = true;
         AppLogger.Info("已启动实时推理。");
     }
@@ -281,64 +285,27 @@ public sealed class AudioEngine : IDisposable
             _asioOut.AudioAvailable -= OnAsioAudioAvailable;
         }
 
-        try
-        {
-            _capture?.Dispose();
-        }
-        catch (Exception ex)
-        {
-            AppLogger.Warning($"释放录音资源失败: {ex.Message}");
-        }
+        var outputToDispose = ReferenceEquals(_output, _asioOut) ? null : _output;
 
-        try
-        {
-            _output?.Dispose();
-        }
-        catch (Exception ex)
-        {
-            AppLogger.Warning($"释放播放资源失败: {ex.Message}");
-        }
-
-        try
-        {
-            _paStream?.Dispose();
-        }
-        catch (Exception ex)
-        {
-            AppLogger.Warning($"释放KS流失败: {ex.Message}");
-        }
-
-        try
-        {
-            _asioOut?.Dispose();
-        }
-        catch (Exception ex)
-        {
-            AppLogger.Warning($"释放ASIO资源失败: {ex.Message}");
-        }
-
-        try
-        {
-            _denoiser?.Dispose();
-        }
-        catch (Exception ex)
-        {
-            AppLogger.Warning($"释放推理资源失败: {ex.Message}");
-        }
+        DisposeSilently(_capture, "释放录音资源失败");
+        DisposeSilently(outputToDispose, "释放播放资源失败");
+        DisposeSilently(_paStream, "释放 KS 流失败");
+        DisposeSilently(_asioOut, "释放 ASIO 资源失败");
+        DisposeSilently(_runtime, "释放推理资源失败");
 
         _capture = null;
         _output = null;
         _asioOut = null;
-        _denoiser = null;
+        _runtime = null;
         _inputBuffer = null;
         _inputSampleProvider = null;
         _outputSampleProvider = null;
         _denoiseProvider = null;
         _inputResampleTiming = null;
         _outputChainTiming = null;
-        _asioByteBuffer = null;
+        _captureByteBuffer = null;
+        _captureFloatBuffer = null;
         _asioInterleavedBuffer = null;
-        _asioMonoBuffer = null;
         _asioSampleRate = 0;
         _paStream = null;
         _paCallback = null;
@@ -348,14 +315,18 @@ public sealed class AudioEngine : IDisposable
         _paInputChannels = 0;
         _paOutputChannels = 0;
         _paInputBuffer = null;
-        _paInputMono = null;
         _paInputInt16 = null;
         _paOutputBuffer = null;
         _paOutputInt16 = null;
+        _inputFormat = null;
+        _outputFormat = null;
+        _pipelineSampleRate = 0;
+        _processingChannels = 0;
         _config = null;
         ActualInputSampleRate = 0;
         ActualOutputSampleRate = 0;
         ActualBufferSamples = 0;
+        ProcessingChannelMode = "未运行";
 
         IsRunning = false;
         AppLogger.Info("已停止。");
@@ -367,9 +338,14 @@ public sealed class AudioEngine : IDisposable
         {
             case AudioBackendType.Mme:
                 int inDevice = ParseDeviceNumber(inputDevice.Id);
+                var inputCaps = WaveIn.GetCapabilities(inDevice);
                 var waveIn = new WaveInEvent
                 {
-                    DeviceNumber = inDevice
+                    DeviceNumber = inDevice,
+                    WaveFormat = new WaveFormat(
+                        _config?.SampleRate ?? 48000,
+                        16,
+                        Math.Clamp(inputCaps.Channels, 1, 2))
                 };
                 _capture = waveIn;
                 _capture.DataAvailable += OnCaptureDataAvailable;
@@ -398,8 +374,6 @@ public sealed class AudioEngine : IDisposable
             throw new InvalidOperationException("无法获取输入设备格式。");
 
         CreateInputBuffer();
-
-        BuildInputSampleProvider();
     }
 
     private void SetupOutput(AudioBackendType backend, AudioDeviceItem outputDevice)
@@ -412,8 +386,9 @@ public sealed class AudioEngine : IDisposable
                 {
                     DeviceNumber = outDevice
                 };
+                var outputCaps = WaveOut.GetCapabilities(outDevice);
                 _output = waveOut;
-                _outputFormat = _inputFormat ?? new WaveFormat(44100, 16, 2);
+                _outputFormat = WaveFormat.CreateIeeeFloatWaveFormat(_config?.SampleRate ?? 48000, Math.Max(1, outputCaps.Channels));
                 ActualOutputSampleRate = _outputFormat.SampleRate;
                 break;
             case AudioBackendType.Ks:
@@ -448,13 +423,13 @@ public sealed class AudioEngine : IDisposable
         _asioOut = new AsioOut(driverName);
         _output = _asioOut;
 
-        _asioInputChannels = GetAsioDefaultInputChannels(_asioOut);
+        _asioInputChannels = NormalizeCaptureChannels(GetAsioDefaultInputChannels(_asioOut));
         _asioOutputChannels = GetAsioDefaultOutputChannels(_asioOut);
 
         _asioSampleRate = ChooseAsioSampleRate(_asioOut, _config?.SampleRate ?? 48000);
         if (_asioSampleRate <= 0)
             throw new InvalidOperationException("ASIO 不支持所选采样率，请调整采样率或切换后端。");
-        _inputFormat = WaveFormat.CreateIeeeFloatWaveFormat(_asioSampleRate, 1);
+        _inputFormat = WaveFormat.CreateIeeeFloatWaveFormat(_asioSampleRate, _asioInputChannels);
         _outputFormat = WaveFormat.CreateIeeeFloatWaveFormat(_asioSampleRate, _asioOutputChannels);
         ActualInputSampleRate = _inputFormat.SampleRate;
         ActualOutputSampleRate = _outputFormat.SampleRate;
@@ -462,7 +437,6 @@ public sealed class AudioEngine : IDisposable
         CreateInputBuffer();
 
         _asioOut.AudioAvailable += OnAsioAudioAvailable;
-        BuildInputSampleProvider();
     }
 
     private void SetupPortAudioStream(bool useInput, bool useOutput, AudioDeviceItem inputDevice, AudioDeviceItem outputDevice)
@@ -558,9 +532,8 @@ public sealed class AudioEngine : IDisposable
 
                             if (useInput)
                             {
-                                _inputFormat = WaveFormat.CreateIeeeFloatWaveFormat(_paSampleRate, 1);
+                                _inputFormat = WaveFormat.CreateIeeeFloatWaveFormat(_paSampleRate, NormalizeCaptureChannels(_paInputChannels));
                                 CreateInputBuffer();
-                                BuildInputSampleProvider();
                                 ActualInputSampleRate = _inputFormat.SampleRate;
                             }
 
@@ -585,27 +558,22 @@ public sealed class AudioEngine : IDisposable
         throw new InvalidOperationException("KS 后端无法打开任何可用格式，请更换设备或后端。");
     }
 
-    private void BuildInputSampleProvider()
+    private void BuildInputSampleProvider(int targetSampleRate, int processingChannels)
     {
         if (_inputBuffer == null)
             throw new InvalidOperationException("输入缓冲未初始化。");
 
         ISampleProvider inputSample = _inputBuffer.ToSampleProvider();
-        if (inputSample.WaveFormat.Channels > 1)
+        if (inputSample.WaveFormat.Channels != processingChannels || inputSample.WaveFormat.Channels > 2)
         {
-            var stereoToMono = new StereoToMonoSampleProvider(inputSample)
-            {
-                LeftVolume = 0.5f,
-                RightVolume = 0.5f
-            };
-            inputSample = stereoToMono;
+            inputSample = new ChannelMapSampleProvider(inputSample, processingChannels);
         }
 
-        if (inputSample.WaveFormat.SampleRate != TargetSampleRate)
+        if (inputSample.WaveFormat.SampleRate != targetSampleRate)
         {
             _inputResampleTiming = new TimingAccumulator();
             inputSample = new TimingSampleProvider(
-                new WdlResamplingSampleProvider(inputSample, TargetSampleRate),
+                new WdlResamplingSampleProvider(inputSample, targetSampleRate),
                 _inputResampleTiming
             );
         }
@@ -620,9 +588,6 @@ public sealed class AudioEngine : IDisposable
 
     private void OnAsioAudioAvailable(object? sender, AsioAudioAvailableEventArgs e)
     {
-        if (_inputBuffer == null)
-            return;
-
         int channels = Math.Max(1, e.InputBuffers.Length);
         int frames = e.SamplesPerBuffer;
         int required = frames * channels;
@@ -631,39 +596,7 @@ public sealed class AudioEngine : IDisposable
             _asioInterleavedBuffer = new float[required];
 
         e.GetAsInterleavedSamples(_asioInterleavedBuffer);
-
-        if (channels == 1)
-        {
-            AddFloatSamples(_asioInterleavedBuffer, frames);
-        }
-        else
-        {
-            if (_asioMonoBuffer == null || _asioMonoBuffer.Length < frames)
-                _asioMonoBuffer = new float[frames];
-            bool average = false;
-            int idx = 0;
-            if (average)
-            {
-                for (int i = 0; i < frames; i++)
-                {
-                    float sum = 0;
-                    for (int ch = 0; ch < channels; ch++)
-                    {
-                        sum += _asioInterleavedBuffer[idx++];
-                    }
-                    _asioMonoBuffer[i] = sum / channels;
-                }
-            }
-            else
-            {
-                for (int i = 0; i < frames; i++)
-                {
-                    _asioMonoBuffer[i] = _asioInterleavedBuffer[idx];
-                    idx += channels;
-                }
-            }
-            AddFloatSamples(_asioMonoBuffer, frames);
-        }
+        AddCapturedFloatSamples(_asioInterleavedBuffer, frames, channels);
     }
 
     private StreamCallbackResult OnPortAudioCallback(
@@ -681,7 +614,7 @@ public sealed class AudioEngine : IDisposable
         if (frames <= 0)
             return StreamCallbackResult.Continue;
 
-        if (_paUseInput && input != IntPtr.Zero && _inputBuffer != null)
+        if (_paUseInput && input != IntPtr.Zero)
         {
             int totalSamples = frames * Math.Max(1, _paInputChannels);
             if (_paSampleFormat == SampleFormat.Float32)
@@ -689,55 +622,14 @@ public sealed class AudioEngine : IDisposable
                 if (_paInputBuffer == null || _paInputBuffer.Length < totalSamples)
                     _paInputBuffer = new float[totalSamples];
                 Marshal.Copy(input, _paInputBuffer, 0, totalSamples);
-                if (_paInputChannels <= 1)
-                {
-                    AddFloatSamples(_paInputBuffer, frames);
-                }
-                else
-                {
-                    if (_paInputMono == null || _paInputMono.Length < frames)
-                        _paInputMono = new float[frames];
-                    int idx = 0;
-                    for (int i = 0; i < frames; i++)
-                    {
-                        float sum = 0;
-                        for (int ch = 0; ch < _paInputChannels; ch++)
-                        {
-                            sum += _paInputBuffer[idx++];
-                        }
-                        _paInputMono[i] = sum / _paInputChannels;
-                    }
-                    AddFloatSamples(_paInputMono, frames);
-                }
+                AddCapturedFloatSamples(_paInputBuffer, frames, Math.Max(1, _paInputChannels));
             }
             else
             {
                 if (_paInputInt16 == null || _paInputInt16.Length < totalSamples)
                     _paInputInt16 = new short[totalSamples];
                 Marshal.Copy(input, _paInputInt16, 0, totalSamples);
-                if (_paInputMono == null || _paInputMono.Length < frames)
-                    _paInputMono = new float[frames];
-                if (_paInputChannels <= 1)
-                {
-                    for (int i = 0; i < frames; i++)
-                    {
-                        _paInputMono[i] = _paInputInt16[i] / 32768f;
-                    }
-                }
-                else
-                {
-                    int idx = 0;
-                    for (int i = 0; i < frames; i++)
-                    {
-                        int sum = 0;
-                        for (int ch = 0; ch < _paInputChannels; ch++)
-                        {
-                            sum += _paInputInt16[idx++];
-                        }
-                        _paInputMono[i] = (sum / (float)_paInputChannels) / 32768f;
-                    }
-                }
-                AddFloatSamples(_paInputMono, frames);
+                AddCapturedInt16Samples(_paInputInt16, frames, Math.Max(1, _paInputChannels));
             }
         }
 
@@ -775,10 +667,12 @@ public sealed class AudioEngine : IDisposable
         return StreamCallbackResult.Continue;
     }
 
-    private void LogStartInfo(AudioBackendType inputBackend, AudioBackendType outputBackend, AudioDeviceItem inputDevice, AudioDeviceItem outputDevice, string modelPath)
+    private void LogStartInfo(AudioBackendType inputBackend, AudioBackendType outputBackend, AudioDeviceItem inputDevice, AudioDeviceItem outputDevice)
     {
-        AppLogger.Info($"启动参数: InputBackend={inputBackend} OutputBackend={outputBackend} Model={modelPath}");
-        AppLogger.Info("推理引擎: DeepFilterNet3");
+        AppLogger.Info($"启动参数: InputBackend={inputBackend} OutputBackend={outputBackend}");
+        AppLogger.Info("推理引擎: DeepFilterNet Runtime (embedded model)");
+        AppLogger.Info($"ReduceMask: {_reduceMask.ToDisplayName()}");
+        AppLogger.Info($"处理通道: {ProcessingChannelMode}");
         AppLogger.Info($"输入设备: {inputDevice.Name} ({inputDevice.Id})");
         AppLogger.Info($"输出设备: {outputDevice.Name} ({outputDevice.Id})");
 
@@ -790,13 +684,9 @@ public sealed class AudioEngine : IDisposable
         {
             AppLogger.Info($"输出格式: {_outputFormat.SampleRate} Hz, {_outputFormat.Channels} ch, {_outputFormat.BitsPerSample} bits, {_outputFormat.Encoding}");
         }
-        if (_inputFormat != null && _inputFormat.SampleRate != TargetSampleRate)
+        if (_inputFormat != null && _inputFormat.SampleRate != _pipelineSampleRate)
         {
-            AppLogger.Info($"输入重采样: {_inputFormat.SampleRate} -> {TargetSampleRate}");
-        }
-        if (_outputFormat != null && _outputFormat.SampleRate != TargetSampleRate)
-        {
-            AppLogger.Info($"输出重采样: {TargetSampleRate} -> {_outputFormat.SampleRate}");
+            AppLogger.Info($"输入重采样: {_inputFormat.SampleRate} -> {_pipelineSampleRate}");
         }
         if ((inputBackend == AudioBackendType.Ks || outputBackend == AudioBackendType.Ks) && _paSampleRate > 0)
         {
@@ -808,14 +698,12 @@ public sealed class AudioEngine : IDisposable
         }
     }
 
-    private TimingSnapshot? GetInputResampleSnapshot()
+    private double GetEstimatedLatencyMs()
     {
-        return _inputResampleTiming?.SnapshotAndReset();
-    }
-
-    private TimingSnapshot? GetOutputChainSnapshot()
-    {
-        return _outputChainTiming?.SnapshotAndReset();
+        double inputBufferedMs = _inputBuffer?.BufferedDuration.TotalMilliseconds ?? 0;
+        if (_runtime == null || _pipelineSampleRate <= 0)
+            return inputBufferedMs;
+        return inputBufferedMs + (_runtime.LatencySamples * 1000.0 / _pipelineSampleRate);
     }
 
     private static int ParseDeviceNumber(string id)
@@ -837,10 +725,10 @@ public sealed class AudioEngine : IDisposable
     private static List<int> BuildInputChannelCandidates(int maxChannels)
     {
         var channels = new List<int>();
-        if (maxChannels >= 1)
-            channels.Add(1);
         if (maxChannels >= 2)
             channels.Add(2);
+        if (maxChannels >= 1)
+            channels.Add(1);
         if (maxChannels > 2)
             channels.Add(maxChannels);
         return channels.Distinct().ToList();
@@ -877,24 +765,81 @@ public sealed class AudioEngine : IDisposable
         return 0;
     }
 
-    private void AddFloatSamples(float[] samples, int count)
+    private void AddCapturedFloatSamples(float[] interleavedSamples, int frames, int sourceChannels)
     {
-        if (_inputBuffer == null)
+        if (_inputBuffer == null || _inputFormat == null || frames <= 0)
             return;
 
-        int bytes = count * sizeof(float);
-        if (_asioByteBuffer == null || _asioByteBuffer.Length < bytes)
+        int targetChannels = NormalizeCaptureChannels(_inputFormat.Channels);
+        int totalSamples = frames * targetChannels;
+        EnsureCaptureBuffers(totalSamples);
+        ChannelMapSampleProvider.MapChannels(interleavedSamples, frames, sourceChannels, _captureFloatBuffer!, 0, targetChannels);
+        int bytes = totalSamples * sizeof(float);
+        Buffer.BlockCopy(_captureFloatBuffer!, 0, _captureByteBuffer!, 0, bytes);
+        _inputBuffer.AddSamples(_captureByteBuffer!, 0, bytes);
+    }
+
+    private void AddCapturedInt16Samples(short[] interleavedSamples, int frames, int sourceChannels)
+    {
+        if (_inputBuffer == null || _inputFormat == null || frames <= 0)
+            return;
+
+        int targetChannels = NormalizeCaptureChannels(_inputFormat.Channels);
+        int totalSamples = frames * targetChannels;
+        EnsureCaptureBuffers(totalSamples);
+        int channelsToUse = Math.Min(Math.Max(sourceChannels, 1), 2);
+
+        for (int frame = 0; frame < frames; frame++)
         {
-            _asioByteBuffer = new byte[bytes];
+            int sourceBase = frame * sourceChannels;
+            int destinationBase = frame * targetChannels;
+
+            if (targetChannels == 1)
+            {
+                if (channelsToUse == 1)
+                {
+                    _captureFloatBuffer![destinationBase] = interleavedSamples[sourceBase] / 32768f;
+                }
+                else
+                {
+                    float left = interleavedSamples[sourceBase] / 32768f;
+                    float right = interleavedSamples[sourceBase + 1] / 32768f;
+                    _captureFloatBuffer![destinationBase] = 0.5f * (left + right);
+                }
+            }
+            else
+            {
+                if (channelsToUse == 1)
+                {
+                    float mono = interleavedSamples[sourceBase] / 32768f;
+                    _captureFloatBuffer![destinationBase] = mono;
+                    _captureFloatBuffer[destinationBase + 1] = mono;
+                }
+                else
+                {
+                    _captureFloatBuffer![destinationBase] = interleavedSamples[sourceBase] / 32768f;
+                    _captureFloatBuffer[destinationBase + 1] = interleavedSamples[sourceBase + 1] / 32768f;
+                }
+            }
         }
 
-        Buffer.BlockCopy(samples, 0, _asioByteBuffer, 0, bytes);
-        _inputBuffer.AddSamples(_asioByteBuffer, 0, bytes);
+        int bytes = totalSamples * sizeof(float);
+        Buffer.BlockCopy(_captureFloatBuffer!, 0, _captureByteBuffer!, 0, bytes);
+        _inputBuffer.AddSamples(_captureByteBuffer!, 0, bytes);
     }
 
     public void Dispose()
     {
         Stop();
+    }
+
+    private void EnsureCaptureBuffers(int totalSamples)
+    {
+        if (_captureFloatBuffer == null || _captureFloatBuffer.Length < totalSamples)
+            _captureFloatBuffer = new float[totalSamples];
+        int totalBytes = totalSamples * sizeof(float);
+        if (_captureByteBuffer == null || _captureByteBuffer.Length < totalBytes)
+            _captureByteBuffer = new byte[totalBytes];
     }
 
     private static int GetWasapiDefaultLatencyMs(MMDevice device)
@@ -944,6 +889,11 @@ public sealed class AudioEngine : IDisposable
         return 2;
     }
 
+    private static int NormalizeCaptureChannels(int channels)
+    {
+        return channels >= 2 ? 2 : 1;
+    }
+
     private void CreateInputBuffer()
     {
         if (_inputFormat == null)
@@ -959,6 +909,13 @@ public sealed class AudioEngine : IDisposable
         ActualBufferSamples = align > 0 ? _inputBuffer.BufferLength / align : 0;
     }
 
+    private int DeterminePipelineSampleRate()
+    {
+        if (_outputFormat != null && _outputFormat.SampleRate > 0)
+            return _outputFormat.SampleRate;
+        return NormalizeSampleRate(_config?.SampleRate ?? 48000);
+    }
+
     private static AudioEngineConfig BuildConfig(AppSettings settings)
     {
         return new AudioEngineConfig(
@@ -972,6 +929,32 @@ public sealed class AudioEngine : IDisposable
             return value;
         AppLogger.Warning($"AudioSampleRate 无效({value})，将改为 48000。");
         return 48000;
+    }
+
+    private static ReduceMaskMode NormalizeReduceMask(ReduceMaskMode reduceMask)
+    {
+        return reduceMask switch
+        {
+            ReduceMaskMode.Independent => ReduceMaskMode.Independent,
+            ReduceMaskMode.Maximum => ReduceMaskMode.Maximum,
+            ReduceMaskMode.Mean => ReduceMaskMode.Mean,
+            _ => ReduceMaskMode.Independent
+        };
+    }
+
+    private static void DisposeSilently(IDisposable? disposable, string errorMessage)
+    {
+        if (disposable == null)
+            return;
+
+        try
+        {
+            disposable.Dispose();
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Warning($"{errorMessage}: {ex.Message}");
+        }
     }
 
     private sealed record AudioEngineConfig(

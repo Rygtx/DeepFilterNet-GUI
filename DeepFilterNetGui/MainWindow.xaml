@@ -284,6 +284,7 @@
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
                         </Grid.RowDefinitions>
 
                         <Border Grid.Row="0" Grid.Column="0" CornerRadius="8" Background="#151515" Padding="10" Margin="0,0,8,8">
@@ -297,7 +298,7 @@
                         <Border Grid.Row="0" Grid.Column="1" CornerRadius="8" Background="#151515" Padding="10" Margin="0,0,0,8">
                             <StackPanel>
                                 <TextBlock Foreground="#B0B0B0" FontSize="12" Text="推理耗时" />
-                                <TextBlock Text="{Binding OnnxMs, StringFormat={}{0:F2} ms}"
+                                <TextBlock Text="{Binding InferMs, StringFormat={}{0:F2} ms}"
                                            FontFamily="Bahnschrift"
                                            FontWeight="SemiBold" />
                             </StackPanel>
@@ -314,6 +315,14 @@
                             <StackPanel>
                                 <TextBlock Foreground="#B0B0B0" FontSize="12" Text="输出采样率" />
                                 <TextBlock Text="{Binding OutputSampleRateDisplay}"
+                                           FontFamily="Bahnschrift"
+                                           FontWeight="SemiBold" />
+                            </StackPanel>
+                        </Border>
+                        <Border Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="2" CornerRadius="8" Background="#151515" Padding="10" Margin="0,8,0,0">
+                            <StackPanel>
+                                <TextBlock Foreground="#B0B0B0" FontSize="12" Text="处理通道" />
+                                <TextBlock Text="{Binding ProcessingChannelMode}"
                                            FontFamily="Bahnschrift"
                                            FontWeight="SemiBold" />
                             </StackPanel>

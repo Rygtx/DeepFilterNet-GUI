@@ -27,10 +27,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private AudioBackendItem? _selectedOutputBackend;
     private AudioDeviceItem? _selectedInputDevice;
     private AudioDeviceItem? _selectedOutputDevice;
-    private ModelItem? _selectedModel;
-    private string _modelPath;
     private double _frameMs;
-    private double _onnxMs;
+    private double _inferMs;
     private double _avgMs;
     private double _rtf;
     private double _latencyMs;
@@ -42,13 +40,13 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private int _actualInputSampleRate;
     private int _actualOutputSampleRate;
     private int _actualBufferSamples;
+    private string _processingChannelMode = "未运行";
 
-    public MainViewModel(Action startAction, Action stopAction, string modelPath)
+    public MainViewModel(Action startAction, Action stopAction)
     {
         Backends = new ObservableCollection<AudioBackendItem>();
         InputDevices = new ObservableCollection<AudioDeviceItem>();
         OutputDevices = new ObservableCollection<AudioDeviceItem>();
-        Models = new ObservableCollection<ModelItem>();
         StartCommand = new RelayCommand(startAction, () => !IsRunning);
         StopCommand = new RelayCommand(stopAction, () => IsRunning);
         ToggleCommand = new RelayCommand(() =>
@@ -63,8 +61,6 @@ public sealed class MainViewModel : INotifyPropertyChanged
             }
         });
 
-        _modelPath = modelPath;
-
         _waveformBitmap = new WriteableBitmap(WaveformWidth, WaveformHeight, 96, 96, PixelFormats.Bgra32, null);
         _waveformPixels = new int[WaveformWidth * WaveformHeight];
         _spectrumBitmap = new WriteableBitmap(SpectrumWidth, SpectrumHeight, 96, 96, PixelFormats.Bgra32, null);
@@ -74,16 +70,9 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public ObservableCollection<AudioBackendItem> Backends { get; }
     public ObservableCollection<AudioDeviceItem> InputDevices { get; }
     public ObservableCollection<AudioDeviceItem> OutputDevices { get; }
-    public ObservableCollection<ModelItem> Models { get; }
     public ICommand StartCommand { get; }
     public ICommand StopCommand { get; }
     public ICommand ToggleCommand { get; }
-
-    public string ModelPath
-    {
-        get => _modelPath;
-        private set => SetField(ref _modelPath, value);
-    }
 
     public AudioBackendItem? SelectedInputBackend
     {
@@ -107,21 +96,6 @@ public sealed class MainViewModel : INotifyPropertyChanged
     {
         get => _selectedOutputDevice;
         set => SetField(ref _selectedOutputDevice, value);
-    }
-
-    public ModelItem? SelectedModel
-    {
-        get => _selectedModel;
-        set
-        {
-            if (SetField(ref _selectedModel, value))
-            {
-                if (value != null)
-                {
-                    ModelPath = value.Path;
-                }
-            }
-        }
     }
 
     public bool IsRunning
@@ -168,7 +142,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public ImageSource SpectrumImage => _spectrumBitmap;
 
     public double FrameMs { get => _frameMs; set => SetField(ref _frameMs, value); }
-    public double OnnxMs { get => _onnxMs; set => SetField(ref _onnxMs, value); }
+    public double InferMs { get => _inferMs; set => SetField(ref _inferMs, value); }
     public double AvgMs { get => _avgMs; set => SetField(ref _avgMs, value); }
     public double Rtf { get => _rtf; set => SetField(ref _rtf, value); }
     public double LatencyMs { get => _latencyMs; set => SetField(ref _latencyMs, value); }
@@ -210,6 +184,12 @@ public sealed class MainViewModel : INotifyPropertyChanged
         }
     }
 
+    public string ProcessingChannelMode
+    {
+        get => _processingChannelMode;
+        set => SetField(ref _processingChannelMode, value);
+    }
+
     public string InputSampleRateDisplay
     {
         get
@@ -236,7 +216,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     public void UpdateMetrics(Metrics metrics)
     {
-        OnnxMs = metrics.OnnxMs;
+        InferMs = metrics.InferMs;
         FrameMs = metrics.FrameMs;
         AvgMs = metrics.AvgMs;
         Rtf = metrics.Rtf;

@@ -1,0 +1,3 @@
+[submodule "extern/DeepFilterNet"]
+	path = extern/DeepFilterNet
+	url = https://github.com/Rikorose/DeepFilterNet.git

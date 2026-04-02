@@ -118,6 +118,17 @@ public partial class SettingsWindow : Wpf.Ui.Controls.FluentWindow
 
         BindAudioParam(AudioSampleRateCombo, new[] { 16000, 44100, 48000, 88200, 96000 },
             () => _settings.AudioSampleRate, v => _settings.AudioSampleRate = v, "采样率(Hz)", allowAuto: false);
+        BindAudioParam(
+            ReduceMaskCombo,
+            new[]
+            {
+                new SettingOption<int>((int)ReduceMaskMode.Independent, ReduceMaskMode.Independent.ToDisplayName()),
+                new SettingOption<int>((int)ReduceMaskMode.Maximum, ReduceMaskMode.Maximum.ToDisplayName()),
+                new SettingOption<int>((int)ReduceMaskMode.Mean, ReduceMaskMode.Mean.ToDisplayName())
+            },
+            () => (int)_settings.ReduceMask,
+            v => _settings.ReduceMask = (ReduceMaskMode)v,
+            "通道掩码合并");
         _audioParamsBound = true;
     }
 
@@ -125,6 +136,7 @@ public partial class SettingsWindow : Wpf.Ui.Controls.FluentWindow
     {
         _updating = true;
         AudioSampleRateCombo.SelectedValue = _settings.AudioSampleRate;
+        ReduceMaskCombo.SelectedValue = (int)_settings.ReduceMask;
         _updating = false;
     }
 
@@ -139,6 +151,23 @@ public partial class SettingsWindow : Wpf.Ui.Controls.FluentWindow
         {
             string labelText = current == 0 ? "自动" : current.ToString();
             list.Insert(allowAuto ? 1 : 0, new SettingOption<int>(current, labelText));
+        }
+
+        comboBox.DisplayMemberPath = nameof(SettingOption<int>.Label);
+        comboBox.SelectedValuePath = nameof(SettingOption<int>.Value);
+        comboBox.ItemsSource = list;
+        comboBox.SelectedValue = current;
+        comboBox.Tag = new AudioParamBinding(getter, setter, label);
+        comboBox.SelectionChanged += OnAudioParamSelectionChanged;
+    }
+
+    private void BindAudioParam(ComboBox comboBox, IReadOnlyCollection<SettingOption<int>> options, Func<int> getter, Action<int> setter, string label)
+    {
+        var list = options.ToList();
+        int current = getter();
+        if (!list.Any(o => o.Value == current))
+        {
+            list.Insert(0, new SettingOption<int>(current, current.ToString()));
         }
 
         comboBox.DisplayMemberPath = nameof(SettingOption<int>.Label);

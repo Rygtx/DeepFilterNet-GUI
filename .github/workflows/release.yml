@@ -15,6 +15,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Read App Info
         shell: pwsh
@@ -44,6 +46,11 @@ jobs:
         with:
           dotnet-version: "10.0.x"
 
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
       - name: Restore
         run: dotnet restore
 
@@ -56,12 +63,36 @@ jobs:
       - name: Include docs (Self-Contained)
         shell: pwsh
         run: |
-          Copy-Item README.md, LICENSE -Destination "publish-$env:APP_NAME-sc" -Force
+          Copy-Item README.md, LICENSE, LICENSE-MIT, LICENSE-APACHE -Destination "publish-$env:APP_NAME-sc" -Force
 
       - name: Include docs (Framework-Dependent)
         shell: pwsh
         run: |
-          Copy-Item README.md, LICENSE -Destination "publish-$env:APP_NAME-fd" -Force
+          Copy-Item README.md, LICENSE, LICENSE-MIT, LICENSE-APACHE -Destination "publish-$env:APP_NAME-fd" -Force
+
+      - name: Verify Publish Outputs
+        shell: pwsh
+        run: |
+          $paths = @(
+            "publish-$env:APP_NAME-sc",
+            "publish-$env:APP_NAME-fd"
+          )
+          foreach ($path in $paths) {
+            if (-not (Test-Path (Join-Path $path "deepfilter_runtime_bridge.dll"))) {
+              throw "Missing deepfilter_runtime_bridge.dll in $path"
+            }
+            if (Test-Path (Join-Path $path "df.dll")) {
+              throw "Unexpected df.dll in $path"
+            }
+            if (Test-Path (Join-Path $path "Models")) {
+              throw "Unexpected Models directory in $path"
+            }
+            foreach ($doc in @("README.md", "LICENSE", "LICENSE-MIT", "LICENSE-APACHE")) {
+              if (-not (Test-Path (Join-Path $path $doc))) {
+                throw "Missing $doc in $path"
+              }
+            }
+          }
 
       - name: Zip
         shell: pwsh

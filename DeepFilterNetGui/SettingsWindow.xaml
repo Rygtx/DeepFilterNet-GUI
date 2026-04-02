@@ -133,6 +133,17 @@
                                 </StackPanel>
                             </Grid>
 
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="通道掩码合并" />
+                                <ComboBox x:Name="ReduceMaskCombo"
+                                          Grid.Column="1"
+                                          Width="180" />
+                            </Grid>
+
                         </StackPanel>
                     </ScrollViewer>
                 </TabItem>
